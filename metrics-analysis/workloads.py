@@ -12,7 +12,7 @@
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC CREATE TABLE users.yu_gong.workload_insights_10days SELECT * from prod.workload_insights where customerType IN ("Customer", "MicrosoftPaid") AND canonicalCustomerName NOT IN ("Databricks", "Microsoft") AND date < date_trunc('week', current_date()) AND date >= DATEADD(day, -10, current_date())
+# MAGIC CREATE TABLE users.yu_gong.workload_insights_1year SELECT * from prod.workload_insights where customerType IN ("Customer", "MicrosoftPaid") AND canonicalCustomerName NOT IN ("Databricks", "Microsoft") AND date < date_trunc('week', current_date()) AND date >= DATEADD(day, -380, current_date())
 
 # COMMAND ----------
 
@@ -39,16 +39,13 @@ def extractWorkload(workloadFeatureFlags: Dict[str, str])-> List[str]:
 
 # COMMAND ----------
 
-Find out all the different 
-
-# COMMAND ----------
-
 from pyspark.sql.functions import explode
 from pyspark.sql.functions import lit
 
+# Find out all the existing workloads in workloadFeatureFlags
 allWorkloads = df \
   .withColumn("MLworkloads", extractWorkload(col("workloadFeatureFlags"))) \
-  .select(explode("MLworkloads").alias("ygong")).distinct().collect()
+  .select(explode("MLworkloads").alias("ygong")).distinct().persist()
   
 # values = tmp.collect()
 
@@ -58,5 +55,4 @@ allWorkloads = df \
 
 # COMMAND ----------
 
-tmp.select("ygong").distinct().show()
-
+allWorkloads.show()

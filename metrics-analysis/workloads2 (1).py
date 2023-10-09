@@ -1,5 +1,12 @@
 # Databricks notebook source
 from pyspark.sql.functions import col
+from pyspark.sql.functions import udf
+from typing import Dict, List
+from pyspark.sql.types import ArrayType, StringType
+
+
+# COMMAND ----------
+
 
 df = spark.sql(f''' SELECT
                date, cloudType, canonicalCustomerName, workloadType, workloadName, 
@@ -11,12 +18,14 @@ df = spark.sql(f''' SELECT
                clusterFeatureFlags.MLR as MLR, 
                clusterFeatureFlags,
                workloadFeatureFlags,
-               packages from users.yu_gong.workload_insights_10days where workloadFeatureFlags is not null
+               packages from users.yu_gong.workload_insights_1year
                ''')
 
 # COMMAND ----------
 
-display(df)
+# MAGIC %sql
+# MAGIC select count(*) from users.yu_gong.workload_insights_1year
+# MAGIC
 
 # COMMAND ----------
 
@@ -33,9 +42,6 @@ tensorflow = "tensorflow"
 
 # COMMAND ----------
 
-from pyspark.sql.functions import udf
-from typing import Dict, List
-from pyspark.sql.types import ArrayType, StringType
 # ML, horovod, horovodrunner, petastorm, pytorch, sklearn
 # sparkdl, tensorflow, xgboost
 @udf(returnType=ArrayType(StringType()))
@@ -122,14 +128,10 @@ df = df \
 
 # COMMAND ----------
 
-display(df)
-
-# COMMAND ----------
-
 df.write \
   .format("delta") \
   .mode("overwrite") \
-  .saveAsTable("users.yu_gong.insights_10days_process1")
+  .saveAsTable("users.yu_gong.insights_1year_process1")
 
 # COMMAND ----------
 
@@ -139,7 +141,7 @@ def computeType(mlr: bool, gpu: bool)-> str:
   runtime = "mlr" if mlr else "dbr"
   return f"{runtime}-{hardware}"
 
-df = spark.sql(f'''SELECT date, MLR, useGPU, DBU from users.yu_gong.insights_10days_process1 ''')\
+df = spark.sql(f'''SELECT date_trunc('week', date) AS week, MLR, useGPU, DBU from users.yu_gong.insights_1year_process1 ''')\
   .withColumn("computetype", computeType(col("MLR"), col("useGPU")))
 display(df)
 
@@ -151,92 +153,30 @@ def computeType(single: bool, gpu: bool)-> str:
   single = "single-node" if single else "distribued"
   return f"{single}-{hardware}"
 
-df = spark.sql(f'''SELECT date, driverDBU == DBU as isSingleNode, useGPU, DBU from users.yu_gong.insights_10days_process1 where MLR == TRUE''')\
+df = spark.sql(f'''SELECT date_trunc('week', date) AS week, driverDBU == DBU as isSingleNode, useGPU, DBU from users.yu_gong.insights_1year_process1 where MLR == TRUE''')\
   .withColumn("computetype", computeType(col("isSingleNode"), col("useGPU")))
 display(df)
 
 # COMMAND ----------
 
 from pyspark.sql.functions import explode
-from pyspark.sql.functions import col
 
-df = spark.sql(f'''SELECT date, spottedPackageTypes, DBU from users.yu_gong.insights_10days_process1 where MLR == TRUE''')\
-  .select("date", explode("spottedPackageTypes").alias("ygong"), "DBU")
+@udf(returnType=ArrayType(StringType()))
+def spottedLoads(loads: List[str])-> List[str]:
+  spottedLoads = set(["sparkML", "sklearn", "xgboost", "ML", "tensorflow",  "pytorch", "huggingface", "langchain"])
+  ret = set(["all"])
+  for i in range(len(loads)):
+    if loads[i] in spottedLoads:
+      ret.add(loads[i])
+  return list(ret)
+
+df = spark.sql(f'''SELECT date, MLworkloads, DBU from users.yu_gong.insights_10days_process1 where MLR == TRUE''')\
+      .withColumn("spottedLoads", spottedLoads(col("MLworkloads")))\
+      .select("date", "DBU", explode("spottedLoads"))
 display(df)
-
-# COMMAND ----------
-
-df = spark.sql(f'''SELECT date, spottedPackageTypes, DBU from users.yu_gong.insights_10days_process1 where MLR == TRUE''')
-df.printSchema()
-
-# COMMAND ----------
-
-
 
 # COMMAND ----------
 
 df = spark.sql(f'''SELECT date, packagesTypes, DBU from users.yu_gong.insights_10days_process1 where MLR == TRUE''')\
       .select("date", "DBU", explode("packagesTypes").alias("mlType"))
 display(df)
-
-# COMMAND ----------
-
-from pyspark.sql.functions import col, split, struct
-from pyspark.sql.types import DoubleType, StructType, StructField
-
-workloads = [sparkML, pytorch, genAI, autoML, sklearn, xgboost, other, tensorflow]
-types = [StructField(w, DoubleType(), False) for w in workloads]
-return_types = [StructField("ML", DoubleType(), False)]  + types
-other_index = workloads.index(other)
-
-@udf (returnType=StructType(return_types))
-def split_name(MLLoads: List[str], dbu: float)-> List[float]:
-  x = set(MLLoads)
-  x_dbs = [dbu if w in x else 0 for w in workloads]
-
-  if "ML" in MLLoads:
-    x_dbs[other_index] = 0
-    v = [dbu] + x_dbs
-    
-  else:
-    v = [0] + x_dbs
-  return v
-
-
-# COMMAND ----------
-
-from pyspark.sql.functions import col, sum, avg
-
-df = spark.sql(f'''SELECT date, spottedPackageTypes, DBU from users.yu_gong.insights_10days_process1 where MLR == TRUE''')\
-  .withColumn("nn", split_name(col("spottedPackageTypes"), col("DBU")))\
-    .select("date", "DBU", "nn.*")\
-    .groupBy("date").agg(
-    sum("DBU").alias("DBU"),
-    sum("ML").alias("ML"),
-    sum("misc").alias("misc"),
-    sum("sparkML").alias("sparkML"),
-    sum("pytorch").alias("pytorch"),
-    sum("genAI").alias("genAI"),
-    sum("sklearn").alias("sklearn"),
-    sum("xgboost").alias("xgboost"),
-    sum("tensorflow").alias("tensorflow"),
-      sum("autoML").alias("autoML")
-    
-    
-)
-
-df = df.withColumn("rate", (col("ML") + col("misc")) / col("DBU"))\
-   .withColumn("MLrate", col("ML") / col("DBU"))\
-  .withColumn("sparkMLrate", col("sparkML") / col("DBU"))\
-  .withColumn("pytorchrate", col("pytorch") / col("DBU"))\
-  .withColumn("genAIrate", col("genAI") / col("DBU"))\
-  .withColumn("autoMLrate", col("autoML") / col("DBU"))\
-  .withColumn("sklearnrate", col("sklearn") / col("DBU"))\
-  .withColumn("xgboostrate", col("xgboost") / col("DBU"))\
-  .withColumn("tfboostrate", col("tensorflow") / col("DBU"))
-
-display(df)
-
-# COMMAND ----------
-
-
