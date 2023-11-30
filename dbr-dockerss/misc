@@ -1,0 +1,2 @@
+FOCAL_R_40_REPO = "deb [arch=amd64,i386] https://cloud.r-project.org/bin/linux/ubuntu focal-cran40/"
+FOCAL_aarch64_R_40_REPO = "deb [arch=arm64,i386] https://cloud.r-project.org/bin/linux/ubuntu focal-cran40/"
